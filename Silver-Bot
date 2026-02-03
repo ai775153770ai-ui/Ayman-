@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+🤖 بوت حماية التيليجرام المتطور v2.0
+Telegram Protection Bot - Fixed Version
+
+✅ تم إصلاح مشكلة Middleware
+✅ يعمل على جميع الإصدارات
+"""
+
+import telebot
+from telebot import types, apihelper
+import time
+import json
+import os
+from datetime import datetime
+import logging
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔧 تفعيل Middleware (مهم جداً!)
+# ═══════════════════════════════════════════════════════════════════════════════
+apihelper.ENABLE_MIDDLEWARE = True
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚙️ إعدادات البوت - ضع معلوماتك هنا
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TOKEN = "8042868100:AAE-vqTcOOwBo8DT1JtCNT0BynmBeXkH4UE"
+CHANNEL_USERNAME = "@techaii"
+DEVELOPER_ID = 6291244851
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# إعدادات إضافية
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DATABASE_FILE = "bot_data.json"
+DEFAULT_PROTECTION = True
+MAX_DELETE_MESSAGES = 100
+BROADCAST_DELAY = 0.05
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# السجلات
+# ═══════════════════════════════════════════════════════════════════════════════
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# تهيئة البوت
+# ═══════════════════════════════════════════════════════════════════════════════
+
+bot = telebot.TeleBot(TOKEN)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# قاعدة البيانات
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def load_data():
+    """تحميل البيانات من ملف JSON"""
+    if os.path.exists(DATABASE_FILE):
+        try:
+            with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"خطأ في تحميل البيانات: {e}")
+    return {
+        "groups_list": [],
+        "users_list": [],
+        "chat_protection": {},
+        "user_warnings": {}
+    }
+
+def save_data():
+    """حفظ البيانات إلى ملف JSON"""
+    try:
+        data = {
+            "groups_list": list(groups_list),
+            "users_list": list(users_list),
+            "chat_protection": chat_protection,
+            "user_warnings": user_warnings
+        }
+        with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info("تم حفظ البيانات بنجاح")
+    except Exception as e:
+        logger.error(f"خطأ في حفظ البيانات: {e}")
+
+# تحميل البيانات
+logger.info("جاري تحميل البيانات...")
+data = load_data()
+groups_list = set(data.get("groups_list", []))
+users_list = set(data.get("users_list", []))
+chat_protection = data.get("chat_protection", {})
+user_warnings = data.get("user_warnings", {})
+logger.info(f"تم تحميل {len(users_list)} مستخدم و {len(groups_list)} مجموعة")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# الدوال المساعدة
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def is_developer(user_id):
+    """التحقق من أن المستخدم هو المطور"""
+    return user_id == DEVELOPER_ID
+
+def is_subscribed(user_id):
+    """التحقق من اشتراك المستخدم في القناة"""
+    if is_developer(user_id):
+        return True
+    try:
+        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
+        return status in ["member", "administrator", "creator"]
+    except Exception as e:
+        logger.warning(f"خطأ في فحص الاشتراك: {e}")
+        return False
+
+def is_admin(chat_id, user_id):
+    """التحقق من أن المستخدم مشرف في المجموعة"""
+    if is_developer(user_id):
+        return True
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        return member.status in ["administrator", "creator"]
+    except:
+        return False
+
+def is_bot_admin(chat_id):
+    """التحقق من أن البوت مشرف في المجموعة"""
+    try:
+        bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
+        return bot_member.status in ["administrator", "creator"]
+    except:
+        return False
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# نظام الاشتراك الإجباري
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.middleware_handler(update_types=['message'])
+def check_subscription(bot_instance, message):
+    """التحقق من الاشتراك قبل معالجة أي رسالة"""
+    if message.chat.type != "private":
+        return
+    
+    if message.text and message.text.startswith('/start'):
+        return
+    
+    if not is_subscribed(message.from_user.id):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "اضغط هنا للاشتراك 📢", 
+            url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            "تحقق من الاشتراك ✅", 
+            callback_data="check_subscription"
+        ))
+        bot.send_message(
+            message.chat.id,
+            f"⚠️ عذراً عزيزي، يجب عليك الاشتراك في قناة البوت أولاً:\n\n"
+            f"📢 القناة: {CHANNEL_USERNAME}\n\n"
+            f"بعد الاشتراك، اضغط على زر 'تحقق من الاشتراك' ✅",
+            reply_markup=markup
+        )
+        return False
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
+def verify_subscription(call):
+    """التحقق من الاشتراك عند الضغط على الزر"""
+    if is_subscribed(call.from_user.id):
+        bot.answer_callback_query(call.id, "✅ تم التحقق! يمكنك الآن استخدام البوت", show_alert=True)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_message(
+            call.message.chat.id, 
+            "🎉 مرحباً بك! يمكنك الآن استخدام البوت.\n"
+            "استخدم /اوامر لمعرفة الأوامر المتاحة."
+        )
+    else:
+        bot.answer_callback_query(
+            call.id, 
+            "❌ لم تقم بالاشتراك بعد! اشترك في القناة أولاً", 
+            show_alert=True
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# أمر البداية
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    """رسالة الترحيب"""
+    user_id = message.from_user.id
+    users_list.add(user_id)
+    save_data()
+    
+    if message.chat.type == "private" and not is_subscribed(user_id):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "اضغط هنا للاشتراك 📢", 
+            url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            "تحقق من الاشتراك ✅", 
+            callback_data="check_subscription"
+        ))
+        bot.send_message(
+            message.chat.id,
+            f"⚠️ عذراً عزيزي، يجب عليك الاشتراك في قناة البوت أولاً:\n\n"
+            f"📢 القناة: {CHANNEL_USERNAME}\n\n"
+            f"بعد الاشتراك، اضغط على زر 'تحقق من الاشتراك' ✅",
+            reply_markup=markup
+        )
+        return
+    
+    if is_developer(user_id):
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        markup.add("📊 احصائيات البوت", "📤 اذاعة للكل")
+        markup.add("🔄 تحديث", "🔚 إيقاف البوت")
+        bot.reply_to(message, "👋 أهلاً بك سيدي المطور في لوحة التحكم.", reply_markup=markup)
+    else:
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        markup.add("📋 الأوامر", "ℹ️ معلوماتي")
+        bot.send_message(
+            message.chat.id,
+            "🤖 أهلاً بك في بوت الحماية المتطور!\n\n"
+            "✨ أنا هنا لحماية مجموعاتك من السبام والروابط المشبوهة\n\n"
+            "📝 استخدم /اوامر لمعرفة ما يمكنني فعله",
+            reply_markup=markup
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# قائمة الأوامر
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(commands=["اوامر", "help"])
+def help_cmds(message):
+    """عرض قائمة الأوامر"""
+    help_text = """
+🛡️ **أوامر الإشراف (للمشرفين فقط):**
+
+**إدارة الأعضاء:**
+• `حظر` - لحظر عضو من المجموعة (بالرد)
+• `كتم` - لمنع عضو من إرسال الرسائل (بالرد)
+• `الغاء كتم` - لإلغاء كتم عضو (بالرد)
+• `طرد` - لإخراج عضو من المجموعة (بالرد)
+• `الغاء حظر` - لإلغاء حظر عضو (بالرد)
+
+**إدارة المحتوى:**
+• `تثبيت` - لتثبيت رسالة (بالرد)
+• `الغاء تثبيت` - لإلغاء تثبيت الرسالة
+• `مسح [عدد]` - لحذف عدد من الرسائل (مثال: مسح 10)
+
+**الحماية:**
+• `تفعيل` - لتفعيل حماية المجموعة
+• `تعطيل` - لتعطيل حماية المجموعة
+
+👤 **أوامر عامة:**
+• `ايدي` - لعرض معلوماتك
+• `رتبتي` - لمعرفة صلاحياتك
+• `/start` - لبدء التفاعل
+
+📌 **ملاحظة:** معظم الأوامر تعمل بالرد على رسالة العضو
+"""
+    bot.reply_to(message, help_text, parse_mode="Markdown")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# لوحة تحكم المطور
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(func=lambda m: m.text in ["📋 الأوامر", "ℹ️ معلوماتي"] and m.chat.type == "private")
+def user_buttons(message):
+    """معالجة أزرار المستخدم"""
+    if message.text == "📋 الأوامر":
+        help_cmds(message)
+    elif message.text == "ℹ️ معلوماتي":
+        user_id = message.from_user.id
+        rank = "مطور 👨‍💻" if is_developer(user_id) else "مستخدم 👤"
+        bot.reply_to(
+            message,
+            f"👤 الاسم: {message.from_user.first_name}\n"
+            f"🆔 الايدي: `{user_id}`\n"
+            f"🎖️ الرتبة: {rank}\n"
+            f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d')}",
+            parse_mode="Markdown"
+        )
+
+@bot.message_handler(func=lambda m: is_developer(m.from_user.id) and m.chat.type == "private")
+def developer_panel(message):
+    """لوحة تحكم المطور"""
+    text = message.text
+    
+    if text == "📊 احصائيات البوت":
+        stats_text = (
+            f"📈 **إحصائيات البوت:**\n\n"
+            f"👥 عدد المستخدمين: **{len(users_list)}**\n"
+            f"👥 عدد المجموعات: **{len(groups_list)}**\n"
+            f"🛡️ مجموعات محمية: **{sum(1 for v in chat_protection.values() if v)}**\n"
+            f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        bot.reply_to(message, stats_text, parse_mode="Markdown")
+    
+    elif text == "📤 اذاعة للكل":
+        msg = bot.reply_to(message, "📝 أرسل رسالتك الآن:")
+        bot.register_next_step_handler(msg, perform_broadcast)
+    
+    elif text == "🔄 تحديث":
+        bot.reply_to(message, "🔄 جاري التحديث...")
+        save_data()
+        bot.send_message(message.chat.id, "✅ تم التحديث!")
+    
+    elif text == "🔚 إيقاف البوت":
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✅ نعم", callback_data="stop_bot_yes"),
+            types.InlineKeyboardButton("❌ لا", callback_data="stop_bot_no")
+        )
+        bot.send_message(message.chat.id, "⚠️ هل أنت متأكد؟", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("stop_bot_"))
+def stop_bot_callback(call):
+    """معالجة قرار إيقاف البوت"""
+    if call.data == "stop_bot_yes" and is_developer(call.from_user.id):
+        bot.answer_callback_query(call.id, "تم إيقاف البوت")
+        bot.send_message(call.message.chat.id, "🔴 تم إيقاف البوت...")
+        save_data()
+        bot.stop_polling()
+    else:
+        bot.answer_callback_query(call.id, "تم الإلغاء")
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+
+def perform_broadcast(message):
+    """تنفيذ الإذاعة"""
+    if not message.text:
+        bot.reply_to(message, "❌ يجب إرسال رسالة نصية!")
+        return
+    
+    success_count = 0
+    fail_count = 0
+    status_msg = bot.reply_to(message, "📤 جاري الإرسال...")
+    
+    for user in users_list:
+        try:
+            bot.send_message(user, message.text)
+            success_count += 1
+            time.sleep(BROADCAST_DELAY)
+        except:
+            fail_count += 1
+    
+    bot.edit_message_text(
+        f"✅ **تم إرسال الإذاعة!**\n\n✔️ نجح: {success_count}\n❌ فشل: {fail_count}",
+        status_msg.chat.id,
+        status_msg.message_id,
+        parse_mode="Markdown"
+    )
+    save_data()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# أوامر المجموعات
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(func=lambda m: m.chat.type in ["group", "supergroup"])
+def group_commands(message):
+    """معالجة أوامر المجموعات"""
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    text = message.text
+    
+    groups_list.add(chat_id)
+    save_data()
+    
+    chat_id_str = str(chat_id)
+    
+    if text and text.strip() == "ايدي":
+        rank = "مطور 👨‍💻" if is_developer(user_id) else (
+            "مشرف 🛡️" if is_admin(chat_id, user_id) else "عضو 👤"
+        )
+        bot.reply_to(
+            message,
+            f"👤 الاسم: {message.from_user.first_name}\n"
+            f"🆔 الايدي: `{user_id}`\n"
+            f"🎖️ الرتبة: {rank}",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if text and text.strip() == "رتبتي":
+        rank = "مطور 👨‍💻" if is_developer(user_id) else (
+            "مشرف 🛡️" if is_admin(chat_id, user_id) else "عضو 👤"
+        )
+        bot.reply_to(message, f"🎖️ رتبتك: {rank}")
+        return
+    
+    if not is_admin(chat_id, user_id):
+        check_protection(message)
+        return
+    
+    if not is_bot_admin(chat_id):
+        if text in ["حظر", "كتم", "طرد", "تثبيت", "مسح", "تفعيل", "تعطيل"]:
+            bot.reply_to(message, "⚠️ يجب أن أكون مشرفاً!")
+        return
+    
+    if text == "تفعيل":
+        chat_protection[chat_id_str] = True
+        save_data()
+        bot.reply_to(message, "✅ تم تفعيل الحماية.")
+    
+    elif text == "تعطيل":
+        chat_protection[chat_id_str] = False
+        save_data()
+        bot.reply_to(message, "❌ تم تعطيل الحماية.")
+    
+    elif message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+        target_name = message.reply_to_message.from_user.first_name
+        
+        if is_admin(chat_id, target_id) or is_developer(target_id):
+            bot.reply_to(message, "⚠️ لا يمكنني تنفيذ هذا على مشرف!")
+            return
+        
+        if text == "حظر":
+            try:
+                bot.ban_chat_member(chat_id, target_id)
+                bot.reply_to(message, f"🚫 تم حظر {target_name}.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل: {str(e)}")
+        
+        elif text == "كتم":
+            try:
+                bot.restrict_chat_member(chat_id, target_id, can_send_messages=False)
+                bot.reply_to(message, f"🔇 تم كتم {target_name}.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل: {str(e)}")
+        
+        elif text == "الغاء كتم":
+            try:
+                bot.restrict_chat_member(
+                    chat_id, target_id,
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True
+                )
+                bot.reply_to(message, f"🔊 تم إلغاء كتم {target_name}.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل: {str(e)}")
+        
+        elif text == "طرد":
+            try:
+                bot.ban_chat_member(chat_id, target_id)
+                time.sleep(1)
+                bot.unban_chat_member(chat_id, target_id)
+                bot.reply_to(message, f"👞 تم طرد {target_name}.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل: {str(e)}")
+        
+        elif text == "الغاء حظر":
+            try:
+                bot.unban_chat_member(chat_id, target_id)
+                bot.reply_to(message, f"✅ تم إلغاء حظر {target_name}.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل: {str(e)}")
+        
+        elif text == "تثبيت":
+            try:
+                bot.pin_chat_message(chat_id, message.reply_to_message.message_id)
+                bot.reply_to(message, "📌 تم التثبيت.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل: {str(e)}")
+    
+    elif text == "الغاء تثبيت":
+        try:
+            bot.unpin_chat_message(chat_id)
+            bot.reply_to(message, "📌 تم إلغاء التثبيت.")
+        except Exception as e:
+            bot.reply_to(message, f"❌ فشل: {str(e)}")
+    
+    elif text and text.startswith("مسح "):
+        try:
+            parts = text.split()
+            if len(parts) != 2:
+                bot.reply_to(message, "❌ الاستخدام: مسح [عدد]\nمثال: مسح 10")
+                return
+            
+            num = int(parts[1])
+            
+            if num < 1 or num > MAX_DELETE_MESSAGES:
+                bot.reply_to(message, f"⚠️ يجب أن يكون بين 1 و {MAX_DELETE_MESSAGES}")
+                return
+            
+            deleted = 0
+            current_msg_id = message.message_id
+            
+            for i in range(num + 1):
+                try:
+                    bot.delete_message(chat_id, current_msg_id - i)
+                    deleted += 1
+                    time.sleep(0.1)
+                except:
+                    pass
+            
+            confirm_msg = bot.send_message(chat_id, f"🧹 تم مسح {deleted} رسالة.")
+            time.sleep(3)
+            try:
+                bot.delete_message(chat_id, confirm_msg.message_id)
+            except:
+                pass
+            
+        except ValueError:
+            bot.reply_to(message, "❌ يجب إدخال رقم صحيح!\nمثال: مسح 10")
+        except Exception as e:
+            bot.reply_to(message, f"❌ خطأ: {str(e)}")
+
+def check_protection(message):
+    """فلترة المحتوى"""
+    chat_id = message.chat.id
+    chat_id_str = str(chat_id)
+    
+    if chat_protection.get(chat_id_str, DEFAULT_PROTECTION):
+        if not message.text:
+            return
+        
+        suspicious_patterns = ["t.me/", "http://", "https://", "telegram.me/"]
+        
+        if any(pattern in message.text.lower() for pattern in suspicious_patterns):
+            try:
+                bot.delete_message(chat_id, message.message_id)
+                warning_msg = bot.send_message(
+                    chat_id,
+                    f"⚠️ {message.from_user.first_name}، ممنوع إرسال الروابط!"
+                )
+                time.sleep(5)
+                try:
+                    bot.delete_message(chat_id, warning_msg.message_id)
+                except:
+                    pass
+            except Exception as e:
+                logger.warning(f"خطأ في الحذف: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# الترحيب بالأعضاء الجدد
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(content_types=['new_chat_members'])
+def welcome_new_members(message):
+    """الترحيب بالأعضاء الجدد"""
+    for new_member in message.new_chat_members:
+        if new_member.id == bot.get_me().id:
+            bot.send_message(
+                message.chat.id,
+                "👋 مرحباً! شكراً لإضافتي\n\n"
+                "🛡️ أنا بوت حماية متطور\n"
+                "⚙️ اجعلني مشرفاً لأحمي المجموعة\n\n"
+                "📝 استخدم /اوامر للأوامر"
+            )
+        else:
+            bot.send_message(
+                message.chat.id,
+                f"👋 أهلاً {new_member.first_name}!\n"
+                f"نتمنى لك وقتاً ممتعاً 🌟"
+            )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# معالج احتياطي
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def catch_all(message):
+    """معالج احتياطي"""
+    if message.chat.type == "private":
+        bot.reply_to(
+            message,
+            "❓ لم أفهم هذا الأمر.\n"
+            "استخدم /اوامر لمعرفة الأوامر."
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# تشغيل البوت
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    print("\n" + "="*80)
+    print("╔══════════════════════════════════════════════════════════════════════════════╗")
+    print("║              🤖 بوت حماية التيليجرام المتطور v2.0 - Fixed 🤖               ║")
+    print("╚══════════════════════════════════════════════════════════════════════════════╝")
+    print("="*80)
+    print("\n🔄 جاري بدء التشغيل...")
+    print(f"📊 تم تحميل {len(users_list)} مستخدم و {len(groups_list)} مجموعة")
+    print(f"📢 قناة الاشتراك: {CHANNEL_USERNAME}")
+    print(f"👨‍💻 ايدي المطور: {DEVELOPER_ID}")
+    print("\n✅ Middleware: مُفعّل")
+    print("🟢 البوت يعمل الآن بنجاح...")
+    print("⏳ في انتظار الرسائل...\n")
+    print("💡 للإيقاف: Ctrl+C\n")
+    print("="*80 + "\n")
+    
+    try:
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    except KeyboardInterrupt:
+        print("\n" + "="*80)
+        print("🛑 تم الإيقاف")
+        save_data()
+        print("💾 تم حفظ البيانات")
+        print("👋 إلى اللقاء!")
+        print("="*80 + "\n")
+    except Exception as e:
+        print("\n" + "="*80)
+        print(f"❌ خطأ: {e}")
+        save_data()
+        print("💾 تم حفظ البيانات")
+        print("="*80 + "\n")
+from flask import Flask
+import threading
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "سيلفر يعمل بنجاح!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def start_bot():
+    bot.infinity_polling()
+
+if __name__ == "__main__":
+    # تشغيل السيرفر في خلفية منفصلة
+    t = threading.Thread(target=run)
+    t.start()
+    # تشغيل البوت
+    start_bot()
